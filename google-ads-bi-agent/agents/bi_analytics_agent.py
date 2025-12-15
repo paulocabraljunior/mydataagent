@@ -2,9 +2,15 @@ import pandas as pd
 import json
 import os
 from typing import Dict, List, Any
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
+# Importação condicional para evitar crash se a lib não estiver instalada, embora esteja no reqs
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import JsonOutputParser
+    HAS_LANGCHAIN = True
+except ImportError:
+    HAS_LANGCHAIN = False
+
 from pydantic import BaseModel, Field
 
 # --- Modelos de Saída (Structured Output) ---
@@ -21,16 +27,41 @@ class StrategicReport(BaseModel):
 
 # --- A Classe do Agente ---
 class BIAnalyticsAgent:
-    def __init__(self, model_name="gpt-4o"):
-        # Configure sua chave da OpenAI no .env ou variáveis de ambiente
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY não encontrada no ambiente.")
-            
-        self.llm = ChatOpenAI(model=model_name, temperature=0.1, api_key=api_key)
-        self.parser = JsonOutputParser(pydantic_object=StrategicReport)
+    def __init__(self, bus):
+        self.bus = bus
+        self.api_key = os.getenv("GOOGLE_API_KEY")
+        self.llm = None
+        self.parser = None
 
-    def generate_performance_report(self, raw_data: List[Dict]) -> Dict:
+        if HAS_LANGCHAIN:
+            self.parser = JsonOutputParser(pydantic_object=StrategicReport)
+            if self.api_key:
+                try:
+                    self.llm = ChatGoogleGenerativeAI(
+                        model="gemini-1.5-flash",
+                        temperature=0.1,
+                        google_api_key=self.api_key
+                    )
+                except Exception as e:
+                    print(f"⚠️ Erro ao configurar Gemini: {e}")
+            else:
+                print("⚠️ GOOGLE_API_KEY ausente. BI Agent rodará em modo degradado (sem IA).")
+
+        # Inscrevendo-se no EventBus
+        self.bus.subscribe("DATA_FETCHED", self.handle_data)
+
+    async def handle_data(self, payload: List[Dict]):
+        print("🤖 BI Agent: Recebi dados via A2A. Iniciando análise...")
+        try:
+            report = await self.generate_performance_report(payload)
+            await self.bus.publish("REPORT_READY", report)
+        except Exception as e:
+            print(f"❌ BI Agent Error: {e}")
+            import traceback
+            traceback.print_exc()
+            await self.bus.publish("ERROR", {"source": "BI_AGENT", "message": str(e)})
+
+    async def generate_performance_report(self, raw_data: List[Dict]) -> Dict:
         """
         Orquestra o pipeline: Dados Brutos -> Pandas (Hard Stats) -> LLM (Soft Skills) -> JSON
         """
@@ -41,8 +72,8 @@ class BIAnalyticsAgent:
         df = pd.DataFrame([item['metrics'] | {'name': item['name'], 'id': item['id'], 'status': item['status']} for item in raw_data])
         stats = self._calculate_hard_metrics(df)
         
-        # 2. Análise Qualitativa (LLM)
-        strategic_analysis = self._generate_ai_insights(stats, df)
+        # 2. Análise Qualitativa (LLM ou Mock)
+        strategic_analysis = await self._generate_ai_insights(stats, df)
         
         # 3. Merge dos resultados
         return {
@@ -71,10 +102,19 @@ class BIAnalyticsAgent:
             "wasteful_spend": zero_conversion_spend
         }
 
-    def _generate_ai_insights(self, stats: Dict, df: pd.DataFrame) -> Dict:
+    async def _generate_ai_insights(self, stats: Dict, df: pd.DataFrame) -> Dict:
         """Usa o LLM para interpretar os números e sugerir ações."""
         
-        # Convertendo o DF para markdown para o LLM ler facilmente (limitando colunas para economizar tokens)
+        if not self.llm:
+            return {
+                "warning": "IA não configurada (Sem Chave). Retornando placeholder.",
+                "summary": "Campanhas processadas, mas análise qualitativa indisponível.",
+                "recommended_actions": [
+                    {"action": "Configurar API Key", "campaign_name": "System", "reasoning": "Necessário para insights de IA", "priority": "ALTA"}
+                ]
+            }
+
+        # Convertendo o DF para markdown para o LLM ler facilmente
         df_view = df[['name', 'cost', 'conversions', 'cpa', 'ctr_percent']].to_markdown(index=False)
 
         system_prompt = """
@@ -112,7 +152,7 @@ class BIAnalyticsAgent:
         chain = prompt | self.llm | self.parser
         
         try:
-            return chain.invoke({
+            return await chain.ainvoke({
                 "total_spend": stats['total_spend'],
                 "total_conversions": stats['total_conversions'],
                 "global_cpa": stats['global_cpa'],
