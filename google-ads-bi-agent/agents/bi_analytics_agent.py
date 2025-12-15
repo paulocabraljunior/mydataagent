@@ -37,13 +37,14 @@ class BIAnalyticsAgent:
             self.parser = JsonOutputParser(pydantic_object=StrategicReport)
             if self.api_key:
                 try:
-                    # Configurando Gemini 1.5 Flash com Retry para robustez no Free Tier
+                    # Configurando Gemini
+                    # Usando 'gemini-2.0-flash' conforme disponibilidade verificada na API
                     self.llm = ChatGoogleGenerativeAI(
-                        model="gemini-1.5-flash",
+                        model="gemini-2.0-flash",
                         temperature=0.1,
                         google_api_key=self.api_key,
-                        max_retries=3,  # Retry automatico em caso de sobrecarga
-                        request_timeout=60 # Timeout maior para evitar falhas em analises complexas
+                        max_retries=3,
+                        request_timeout=60
                     )
                 except Exception as e:
                     print(f"⚠️ Erro ao configurar Gemini: {e}")
