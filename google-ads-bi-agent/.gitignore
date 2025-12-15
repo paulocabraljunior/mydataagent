@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Environment Variables
+.env
+
+# Config & Secrets (NEVER commit these)
+config/settings.yaml
+client_secret*.json
+*.json
+
+# OS specific
+.DS_Store
