@@ -37,10 +37,14 @@ class BIAnalyticsAgent:
             self.parser = JsonOutputParser(pydantic_object=StrategicReport)
             if self.api_key:
                 try:
+                    # Configurando Gemini
+                    # Usando 'gemini-2.0-flash' conforme disponibilidade verificada na API
                     self.llm = ChatGoogleGenerativeAI(
-                        model="gemini-1.5-flash",
+                        model="gemini-2.0-flash",
                         temperature=0.1,
-                        google_api_key=self.api_key
+                        google_api_key=self.api_key,
+                        max_retries=3,
+                        request_timeout=60
                     )
                 except Exception as e:
                     print(f"⚠️ Erro ao configurar Gemini: {e}")
@@ -115,7 +119,13 @@ class BIAnalyticsAgent:
             }
 
         # Convertendo o DF para markdown para o LLM ler facilmente
-        df_view = df[['name', 'cost', 'conversions', 'cpa', 'ctr_percent']].to_markdown(index=False)
+        # Limitando o número de linhas para economizar tokens e respeitar limites do Free Tier
+        MAX_ROWS_FOR_LLM = 50
+        df_sorted = df.sort_values(by='cost', ascending=False).head(MAX_ROWS_FOR_LLM)
+        df_view = df_sorted[['name', 'cost', 'conversions', 'cpa', 'ctr_percent']].to_markdown(index=False)
+
+        if len(df) > MAX_ROWS_FOR_LLM:
+            df_view += f"\n\n(Aviso: Exibindo apenas as Top {MAX_ROWS_FOR_LLM} campanhas de {len(df)} por custo para análise focada.)"
 
         system_prompt = """
         Você é um Especialista Sênior em Performance de Google Ads (PPC).

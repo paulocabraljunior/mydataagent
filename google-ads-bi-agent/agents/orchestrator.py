@@ -1,46 +1,51 @@
+import asyncio
+import json
+from a2a.communication_layer import EventBus
 from agents.google_ads_agent import GoogleAdsAgent
 from agents.bi_analytics_agent import BIAnalyticsAgent
-import json
 
 class Orchestrator:
     def __init__(self):
         print("🤖 Initializing Orchestrator...")
-        self.ads_agent = GoogleAdsAgent()
-        self.bi_agent = BIAnalyticsAgent(model_name="gpt-4o") # Model name as per user config in BI agent
-        print("✅ Agents Ready.")
+        # 1. Inicializa o Barramento de Eventos
+        self.bus = EventBus()
 
-    def run_pipeline(self, customer_id: str):
-        print(f"\n🚀 Starting Analysis Pipeline for Customer: {customer_id}")
+        # 2. Inicializa os Agentes (Eles se inscrevem no Bus no __init__)
+        self.ads_agent = GoogleAdsAgent(self.bus)
+        self.bi_agent = BIAnalyticsAgent(self.bus)
         
-        # Step 1: Fetch
-        print("\n[1/3] Fetching Campaign Data from Google Ads (Mock/Real)...")
-        campaign_data = self.ads_agent.fetch_campaign_data(customer_id)
-        if not campaign_data:
-            print("❌ No data found.")
-            return
+        self.completion_future = None
 
-        print(f"✅ Retrieved {len(campaign_data)} campaigns.")
-
-        # Step 2: Analyze
-        print("\n[2/3] Analyzing Performance & Generating Insights (BI Agent)...")
-        # Note: In a real scenario without an API key, the LLM part of BI agent might fail if not mocked or key provided.
-        # But per user instruction, we have a .env with a placeholder. 
-        # The user provided BI agent uses ChatOpenAI. If key is invalid, it might error.
-        # For now, we assume the user might want a demo or test.
-        # However, the user's BI agent has a 'model_name' param.
+    async def start(self):
+        print("🚀 Starting Async Pipeline via Orchestrator")
         
+        # Variável de controle para encerrar o loop (Future)
+        loop = asyncio.get_running_loop()
+        self.completion_future = loop.create_future()
+
+        # Inscrevendo o próprio Orquestrador para ouvir o final
+        self.bus.subscribe("REPORT_READY", self.finish_pipeline)
+        self.bus.subscribe("ERROR", self.handle_error)
+
+        # 4. Inicia o Fluxo
+        print("\n▶️ Sending Start Command...")
+        await self.bus.publish("CMD_START_EXTRACT", {"customer_id": "1234567890"})
+
+        # 5. Mantém rodando até finalizar ou Timeout (30s)
         try:
-            report = self.bi_agent.generate_performance_report(campaign_data)
-        except Exception as e:
-            print(f"❌ Analysis failed: {e}")
-            return
+            await asyncio.wait_for(self.completion_future, timeout=30.0)
+        except asyncio.TimeoutError:
+            print("\n⏳ Timeout waiting for pipeline completion.")
 
-        # Step 3: Report
-        print("\n[3/3] Pipeline Complete. Result:")
-        print(json.dumps(report, indent=2, ensure_ascii=False))
-        return report
+    async def finish_pipeline(self, payload):
+        print("\n✅ Pipeline Finished! Report received.")
+        print("-" * 40)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print("-" * 40)
+        if self.completion_future and not self.completion_future.done():
+            self.completion_future.set_result(True)
 
-if __name__ == "__main__":
-    # Demo execution
-    orch = Orchestrator()
-    orch.run_pipeline(customer_id="1234567890")
+    async def handle_error(self, payload):
+        print(f"\n❌ Pipeline Error: {payload}")
+        if self.completion_future and not self.completion_future.done():
+            self.completion_future.set_result(False)
